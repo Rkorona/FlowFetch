@@ -1,3 +1,4 @@
+// FlowFetch/api/cron.mjs
 export default async function handler(request, response) {
   // 1. 安全读取环境变量
   const UNICOM_COOKIE = process.env.UNICOM_COOKIE;
@@ -59,93 +60,81 @@ export default async function handler(request, response) {
     const voiceRemain = voiceRes?.remainResource || "0";
 
     // 4. 深度拆解子资产包
-    let generalText = "";      // 本月通用
-    let carryForwardText = ""; // 上月结转
-    let directionalText = "";    // 定向免流
-    let voiceDetailsText = ""; // 语音明细
-
-    if (flowRes && flowRes.details) {
-      flowRes.details.forEach(item => {
-        const name = item.addUpItemName || item.feePolicyName || "未知流量包";
-        const totalGB = mbToGb(item.total);
-        const remainGB = mbToGb(item.remain);
-        const usedGB = mbToGb(item.use);
-
-        // A. 上月结转流量 (resourceSource === "1")
-        if (item.resourceSource === "1") {
-          carryForwardText += `  ⏳ *${name}*\n       已用: \`${usedGB} GB\` | 剩余: \`${remainGB} GB\` / 共 \`${totalGB} GB\`\n`;
-        } 
-        // B. 定向免流包 (flowType === "2" 或总额度为 0)
-        else if (item.flowType === "2" || parseFloat(item.total) === 0) {
-          if (parseFloat(item.total) === 0) {
-            directionalText += `  🔹 *${name}*\n       已用: \`${usedGB} GB\` (免流不限额)\n`;
-          } else {
-            directionalText += `  🔹 *${name}*\n       已用: \`${usedGB} GB\` | 剩余: \`${remainGB} GB\` / 共 \`${totalGB} GB\`\n`;
-          }
-        } 
-        // C. 本月通用流量
-        else {
-          generalText += `  ▫️ *${name}*\n       已用: \`${usedGB} GB\` | 剩余: \`${remainGB} GB\` / 共 \`${totalGB} GB\`\n`;
-        }
+    // ── 工具 ────────────────────────────────────
+    const bar = (usedMb, totalMb, w = 6) => {
+      const total = parseFloat(totalMb);
+      if (!total || total <= 0) return null;
+      const pct = Math.min(parseFloat(usedMb) / total, 1);
+      const filled = Math.round(pct * w);
+      return '█'.repeat(filled) + '░'.repeat(w - filled) + ' ' + Math.round(pct * 100) + '%';
+    };
+    
+    // ── 分类收集流量包 ────────────────────────────
+    const generalItems = [], carryItems = [], freeItems = [];
+    
+    flowRes?.details?.forEach(item => {
+      const name = (item.addUpItemName || item.feePolicyName || '未知流量包')
+        .replace('(上月结转限本月使用)', '').trim();
+      const entry = { name, total: item.total, remain: item.remain, use: item.use };
+    
+      if (item.resourceSource === '1')                              carryItems.push(entry);
+      else if (item.flowType === '2' || parseFloat(item.total) === 0) freeItems.push({...entry, unlimited: parseFloat(item.total) === 0});
+      else                                                          generalItems.push(entry);
+    });
+    
+    data.MlResources?.forEach(res =>
+      res.details?.forEach(item => {
+        if (parseFloat(item.use) > 0)
+          freeItems.push({ name: (item.feePolicyName || '专属定向包') + '(独立控量)', use: item.use, unlimited: true });
+      })
+    );
+    
+    // ── 单行格式化 ───────────────────────────────
+    const fmtItem = ({ name, use, total, unlimited }) => {
+      if (unlimited)
+        return `∙ ${name}   已用 \`${mbToGb(use)} GB\`（不限额）`;
+      const b = bar(use, total);
+      return `∙ ${name}   \`${mbToGb(use)} / ${mbToGb(total)} GB\`` + (b ? `  ${b}` : '');
+    };
+    
+    // ── 整体进度条 ───────────────────────────────
+    const flowUsedMb  = parseFloat(flowRes?.userResource   || 0);
+    const flowTotalMb = flowUsedMb + parseFloat(flowRes?.remainResource || 0);
+    const overallBar  = bar(flowUsedMb, flowTotalMb, 10) || '';
+    
+    // ── 组装消息 ─────────────────────────────────
+    const ts = updateTime.length >= 16 ? updateTime.slice(5, 16) : updateTime;
+    let msg = `📱 *FlowFetch*　\`${ts}\`\n${packageName}\n\n`;
+    
+    msg += `*📶 流量*　${overallBar}\n`;
+    msg += `已用 \`${flowUsed} GB\` · 剩余 \`${flowRemain} GB\`\n\n`;
+    msg += `*📞 语音*　剩余 \`${voiceRemain} 分钟\``;
+    if (parseInt(voiceUsed) > 0) msg += `　已用 \`${voiceUsed} 分\``;
+    msg += '\n';
+    
+    if (generalItems.length || carryItems.length || freeItems.length) {
+      msg += `\n───────────────────\n`;
+      if (generalItems.length) msg += `*🌐 通用流量*\n` + generalItems.map(fmtItem).join('\n') + '\n';
+      if (carryItems.length)   msg += `\n*⏳ 结转流量*\n` + carryItems.map(fmtItem).join('\n') + '\n';
+      if (freeItems.length)    msg += `\n*🎯 定向免流*\n` + freeItems.map(fmtItem).join('\n') + '\n';
+    }
+    
+    if ((voiceRes?.details?.length ?? 0) > 1) {
+      msg += `\n───────────────────\n*📞 语音明细*\n`;
+      voiceRes.details.forEach(({ feePolicyName, addUpItemName, use, total }) => {
+        msg += `∙ ${feePolicyName || addUpItemName}　\`${use} / ${total} 分钟\`\n`;
       });
     }
-
-    // 提取 MlResources 里面的独立应用免流明细 (例如腾讯游戏)
-    if (data.MlResources) {
-      data.MlResources.forEach(res => {
-        res.details?.forEach(item => {
-          if (parseFloat(item.use) > 0) {
-            const name = item.feePolicyName || "专属定向包";
-            const usedGB = mbToGb(item.use);
-            directionalText += `  🔹 *${name} (独立控量)*\n       已用: \`${usedGB} GB\`\n`;
-          }
-        });
-      });
-    }
-
-    // D. 拆解语音包明细
-    if (voiceRes && voiceRes.details) {
-      voiceRes.details.forEach(item => {
-        const name = item.feePolicyName || item.addUpItemName || "语音包";
-        voiceDetailsText += `  🎙️ *${name}*\n       已用: \`${item.use} 分钟\` | 剩余: \`${item.remain} 分钟\` / 共 \`${item.total} 分钟\`\n`;
-      });
-    }
-
-    // 5. 组装精细化账单排版
-    let tgMessage = `🔔 *FlowFetch 全量资产细节明细账单*\n`;
-    tgMessage += `━━━━━━━━━━━━━━━━━━\n`;
-    tgMessage += `📦 *套餐名称*：${packageName}\n`;
-    tgMessage += `📅 *数据时间*：${updateTime}\n\n`;
-
-    tgMessage += `📊 *【 核心资产大盘 】*\n`;
-    tgMessage += `📶 累计总已用：\`${flowUsed} GB\`\n`;
-    tgMessage += `✅ 核心总剩余：\`${flowRemain} GB\`\n`;
-    tgMessage += `📞 语音总剩余：\`${voiceRemain} 分钟\` (已用 ${voiceUsed} 分)\n\n`;
-
-    if (generalText) {
-      tgMessage += `🌐 *【 本月通用流量仓 】*\n${generalText}\n`;
-    }
-    if (carryForwardText) {
-      tgMessage += `⏳ *【 上月结转流量仓 】*\n${carryForwardText}\n`;
-    }
-    if (directionalText) {
-      tgMessage += `🎯 *【 定向与专属免流 】*\n${directionalText}\n`;
-    }
-    if (voiceDetailsText) {
-      tgMessage += `📞 *【 语音通话包明细 】*\n${voiceDetailsText}\n`;
-    }
-
-    tgMessage += `━━━━━━━━━━━━━━━━━━\n`;
-    tgMessage += `⚡ _数据来自 FlowFetch 自动化推送_`;
-
-    // 6. 发送至 Telegram
+    
+    msg += `\n───────────────────\n_FlowFetch 自动推送_`;
+        // 6. 发送至 Telegram
     const tgUrl = `https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage`;
     const tgResponse = await fetch(tgUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         chat_id: TG_CHAT_ID,
-        text: tgMessage,
+        text: msg,
         parse_mode: "Markdown"
       })
     });
