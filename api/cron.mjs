@@ -1,13 +1,13 @@
+// 在 ESM 模式 (type: "module") 下，必须使用 export default 导出
 export default async function handler(request, response) {
   // 1. 安全读取环境变量
-
-
   const UNICOM_COOKIE = process.env.UNICOM_COOKIE;
   const TG_BOT_TOKEN = process.env.TG_BOT_TOKEN;
   const TG_CHAT_ID = process.env.TG_CHAT_ID;
 
   if (!UNICOM_COOKIE || !TG_BOT_TOKEN || !TG_CHAT_ID) {
     return response.status(400).json({ 
+      success: false,
       error: "缺少必要的配置，请在 Vercel 后台配置 UNICOM_COOKIE, TG_BOT_TOKEN 和 TG_CHAT_ID" 
     });
   }
@@ -15,7 +15,13 @@ export default async function handler(request, response) {
   const unicomUrl = "https://m.client.10010.com/servicequerybusiness/operationservice/queryOcsPackageFlowLeftContentRevisedInJune";
   const requestBody = "duanlianjieabc=&channelCode=&serviceType=&saleChannel=&externalSources=&contactCode=&ticket=&ticketPhone=&ticketChannel=&language=chinese";
 
+  // 创建超时控制器：如果 7 秒内联通没有响应，主动断开请求，防止 Vercel 函数 10 秒超时崩溃
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 7000); 
+
   try {
+    console.log("正在请求联通接口...");
+    
     // 2. 请求联通接口
     const unicomResponse = await fetch(unicomUrl, {
       method: "POST",
@@ -24,8 +30,11 @@ export default async function handler(request, response) {
         "User-Agent": "android@12.1100",
         "Cookie": UNICOM_COOKIE
       },
-      body: requestBody
+      body: requestBody,
+      signal: controller.signal // 绑定超时信号
     });
+
+    clearTimeout(timeoutId); // 成功响应，清除定时器
 
     if (!unicomResponse.ok) {
       throw new Error(`联通接口请求失败，状态码: ${unicomResponse.status}`);
@@ -64,7 +73,6 @@ export default async function handler(request, response) {
           const usedGB = mbToGb(item.use);
           const name = item.addUpItemName || item.feePolicyName || "未知流量包";
           
-          // 如果是没有总额度限制（比如定向免流包，total为 0.00）
           if (parseFloat(item.total) === 0) {
             return `  🔹 ${name}\n       已用: ${usedGB} GB (定向免流)`;
           } else {
@@ -93,6 +101,8 @@ export default async function handler(request, response) {
     tgMessage += `━━━━━━━━━━━━━━━━━━\n`;
     tgMessage += `⚡ _数据来自 FlowFetch 自动化推送_`;
 
+    console.log("正在发送至 Telegram...");
+    
     // 6. 发送至 Telegram
     const tgUrl = `https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage`;
     const tgResponse = await fetch(tgUrl, {
@@ -101,7 +111,7 @@ export default async function handler(request, response) {
       body: JSON.stringify({
         chat_id: TG_CHAT_ID,
         text: tgMessage,
-        parse_mode: "Markdown" // 启用 Markdown 让消息有粗体、代码块，更好看
+        parse_mode: "Markdown"
       })
     });
 
@@ -112,14 +122,22 @@ export default async function handler(request, response) {
 
     return response.status(200).json({ 
       success: true, 
-      message: "通知成功发送！",
-      data: { flowUsed, flowRemain, voiceRemain }
+      message: "通知成功发送！"
     });
 
   } catch (error) {
-    console.error("执行过程发生异常:", error);
-    return response.status(500).json({ success: false, error: error.message });
+    clearTimeout(timeoutId);
+    console.error("运行出错:", error);
+
+    let friendlyMessage = error.message;
+    if (error.name === 'AbortError') {
+      friendlyMessage = "请求联通接口超时（7秒未响应）。说明 Vercel 的海外 IP 被中国联通防火墙直接拦截/丢包。";
+    }
+
+    return response.status(500).json({ 
+      success: false, 
+      error: friendlyMessage 
+    });
   }
 }
-
 
