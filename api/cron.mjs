@@ -104,23 +104,23 @@ export default async function handler(request, response) {
     
     // ── 组装消息 ─────────────────────────────────
     const ts = updateTime.length >= 16 ? updateTime.slice(5, 16) : updateTime;
-    let msg = `📱 *FlowFetch*　\`${ts}\`\n${packageName}\n\n`;
+    let msg = `*FlowFetch*　\`${ts}\`\n${packageName}\n\n`;
     
-    msg += `*📶 流量*　${overallBar}\n`;
+    msg += `*流量*　${overallBar}\n`;
     msg += `已用 \`${flowUsed} GB\` · 剩余 \`${flowRemain} GB\`\n\n`;
-    msg += `*📞 语音*　剩余 \`${voiceRemain} 分钟\``;
+    msg += `*语音*　剩余 \`${voiceRemain} 分钟\``;
     if (parseInt(voiceUsed) > 0) msg += `　已用 \`${voiceUsed} 分\``;
     msg += '\n';
     
     if (generalItems.length || carryItems.length || freeItems.length) {
       msg += `\n───────────────────\n`;
-      if (generalItems.length) msg += `*🌐 通用流量*\n` + generalItems.map(fmtItem).join('\n') + '\n';
-      if (carryItems.length)   msg += `\n*⏳ 结转流量*\n` + carryItems.map(fmtItem).join('\n') + '\n';
-      if (freeItems.length)    msg += `\n*🎯 定向免流*\n` + freeItems.map(fmtItem).join('\n') + '\n';
+      if (generalItems.length) msg += `*通用流量*\n` + generalItems.map(fmtItem).join('\n') + '\n';
+      if (carryItems.length)   msg += `\n*结转流量*\n` + carryItems.map(fmtItem).join('\n') + '\n';
+      if (freeItems.length)    msg += `\n*定向免流*\n` + freeItems.map(fmtItem).join('\n') + '\n';
     }
     
     if ((voiceRes?.details?.length ?? 0) > 1) {
-      msg += `\n───────────────────\n*📞 语音明细*\n`;
+      msg += `\n───────────────────\n*语音明细*\n`;
       voiceRes.details.forEach(({ feePolicyName, addUpItemName, use, total }) => {
         msg += `∙ ${feePolicyName || addUpItemName}　\`${use} / ${total} 分钟\`\n`;
       });
