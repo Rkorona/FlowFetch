@@ -146,7 +146,7 @@ export default async function handler(request, response) {
 
     return response.status(200).json({ 
       success: true, 
-      message: "精细化通知成功发送！"
+      message: "通知成功发送！"
     });
 
   } catch (error) {
