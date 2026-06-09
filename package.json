@@ -9,5 +9,9 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "module"
+  "type": "module",
+  "dependencies": {
+    "@sparticuz/chromium": "^149.0.0",
+    "puppeteer-core": "^25.1.0"
+  }
 }
