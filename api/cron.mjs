@@ -1,4 +1,3 @@
-// 在 ESM 模式 (type: "module") 下，必须使用 export default 导出
 export default async function handler(request, response) {
   // 1. 安全读取环境变量
   const UNICOM_COOKIE = process.env.UNICOM_COOKIE;
@@ -15,13 +14,10 @@ export default async function handler(request, response) {
   const unicomUrl = "https://m.client.10010.com/servicequerybusiness/operationservice/queryOcsPackageFlowLeftContentRevisedInJune";
   const requestBody = "duanlianjieabc=&channelCode=&serviceType=&saleChannel=&externalSources=&contactCode=&ticket=&ticketPhone=&ticketChannel=&language=chinese";
 
-  // 创建超时控制器：如果 7 秒内联通没有响应，主动断开请求，防止 Vercel 函数 10 秒超时崩溃
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 7000); 
 
   try {
-    console.log("正在请求联通接口...");
-    
     // 2. 请求联通接口
     const unicomResponse = await fetch(unicomUrl, {
       method: "POST",
@@ -31,10 +27,10 @@ export default async function handler(request, response) {
         "Cookie": UNICOM_COOKIE
       },
       body: requestBody,
-      signal: controller.signal // 绑定超时信号
+      signal: controller.signal
     });
 
-    clearTimeout(timeoutId); // 成功响应，清除定时器
+    clearTimeout(timeoutId);
 
     if (!unicomResponse.ok) {
       throw new Error(`联通接口请求失败，状态码: ${unicomResponse.status}`);
@@ -42,16 +38,14 @@ export default async function handler(request, response) {
 
     const data = await unicomResponse.json();
 
-    // 校验联通返回的数据状态
     if (data.code !== "0000" && data.code !== "0") {
       throw new Error(`联通接口返回业务错误: ${data.reminder || '未知错误'}`);
     }
 
-    // 3. 精准解析数据结构
+    // 3. 基础顶层数据解析
     const packageName = data.packageName || "联通套餐";
     const updateTime = data.time || new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
 
-    // 寻找流量和语音资源包
     const flowRes = data.resources?.find(r => r.type === "flow");
     const voiceRes = data.resources?.find(r => r.type === "Voice");
 
@@ -64,45 +58,86 @@ export default async function handler(request, response) {
     const voiceUsed = voiceRes?.userResource || "0";
     const voiceRemain = voiceRes?.remainResource || "0";
 
-    // 4. 解析产生消耗的流量明细 (use > 0)
-    let activeFlowDetails = [];
+    // 4. 深度拆解子资产包
+    let generalText = "";      // 本月通用
+    let carryForwardText = ""; // 上月结转
+    let directionalText = "";    // 定向免流
+    let voiceDetailsText = ""; // 语音明细
+
     if (flowRes && flowRes.details) {
-      activeFlowDetails = flowRes.details
-        .filter(item => parseFloat(item.use) > 0)
-        .map(item => {
-          const usedGB = mbToGb(item.use);
-          const name = item.addUpItemName || item.feePolicyName || "未知流量包";
-          
+      flowRes.details.forEach(item => {
+        const name = item.addUpItemName || item.feePolicyName || "未知流量包";
+        const totalGB = mbToGb(item.total);
+        const remainGB = mbToGb(item.remain);
+        const usedGB = mbToGb(item.use);
+
+        // A. 上月结转流量 (resourceSource === "1")
+        if (item.resourceSource === "1") {
+          carryForwardText += `  ⏳ *${name}*\n       已用: \`${usedGB} GB\` | 剩余: \`${remainGB} GB\` / 共 \`${totalGB} GB\`\n`;
+        } 
+        // B. 定向免流包 (flowType === "2" 或总额度为 0)
+        else if (item.flowType === "2" || parseFloat(item.total) === 0) {
           if (parseFloat(item.total) === 0) {
-            return `  🔹 ${name}\n       已用: ${usedGB} GB (定向免流)`;
+            directionalText += `  🔹 *${name}*\n       已用: \`${usedGB} GB\` (免流不限额)\n`;
           } else {
-            const totalGB = mbToGb(item.total);
-            const remainGB = mbToGb(item.remain);
-            return `  🔹 ${name}\n       已用: ${usedGB} GB / 剩余: ${remainGB} GB (总 ${totalGB} GB)`;
+            directionalText += `  🔹 *${name}*\n       已用: \`${usedGB} GB\` | 剩余: \`${remainGB} GB\` / 共 \`${totalGB} GB\`\n`;
+          }
+        } 
+        // C. 本月通用流量
+        else {
+          generalText += `  ▫️ *${name}*\n       已用: \`${usedGB} GB\` | 剩余: \`${remainGB} GB\` / 共 \`${totalGB} GB\`\n`;
+        }
+      });
+    }
+
+    // 提取 MlResources 里面的独立应用免流明细 (例如腾讯游戏)
+    if (data.MlResources) {
+      data.MlResources.forEach(res => {
+        res.details?.forEach(item => {
+          if (parseFloat(item.use) > 0) {
+            const name = item.feePolicyName || "专属定向包";
+            const usedGB = mbToGb(item.use);
+            directionalText += `  🔹 *${name} (独立控量)*\n       已用: \`${usedGB} GB\`\n`;
           }
         });
+      });
     }
 
-    // 5. 拼接精美的 Telegram 消息排版
-    let tgMessage = `🔔 *FlowFetch 流量与余量自动提醒*\n`;
+    // D. 拆解语音包明细
+    if (voiceRes && voiceRes.details) {
+      voiceRes.details.forEach(item => {
+        const name = item.feePolicyName || item.addUpItemName || "语音包";
+        voiceDetailsText += `  🎙️ *${name}*\n       已用: \`${item.use} 分钟\` | 剩余: \`${item.remain} 分钟\` / 共 \`${item.total} 分钟\`\n`;
+      });
+    }
+
+    // 5. 组装精细化账单排版
+    let tgMessage = `🔔 *FlowFetch 全量资产细节明细账单*\n`;
     tgMessage += `━━━━━━━━━━━━━━━━━━\n`;
-    tgMessage += `📦 *当前套餐*：${packageName}\n`;
-    tgMessage += `📅 *更新时间*：${updateTime}\n\n`;
+    tgMessage += `📦 *套餐名称*：${packageName}\n`;
+    tgMessage += `📅 *数据时间*：${updateTime}\n\n`;
 
-    tgMessage += `📊 *整体额度汇总*：\n`;
-    tgMessage += `📶 累计已用流量：\`${flowUsed} GB\`\n`;
-    tgMessage += `✅ 剩余可用流量：\`${flowRemain} GB\`\n`;
-    tgMessage += `📞 剩余通话语音：\`${voiceRemain} 分钟\` (已用 ${voiceUsed} 分)\n\n`;
+    tgMessage += `📊 *【 核心资产大盘 】*\n`;
+    tgMessage += `📶 累计总已用：\`${flowUsed} GB\`\n`;
+    tgMessage += `✅ 核心总剩余：\`${flowRemain} GB\`\n`;
+    tgMessage += `📞 语音总剩余：\`${voiceRemain} 分钟\` (已用 ${voiceUsed} 分)\n\n`;
 
-    if (activeFlowDetails.length > 0) {
-      tgMessage += `📈 *动态消耗账单* (本月已产生使用)：\n`;
-      tgMessage += activeFlowDetails.join("\n") + "\n";
+    if (generalText) {
+      tgMessage += `🌐 *【 本月通用流量仓 】*\n${generalText}\n`;
     }
+    if (carryForwardText) {
+      tgMessage += `⏳ *【 上月结转流量仓 】*\n${carryForwardText}\n`;
+    }
+    if (directionalText) {
+      tgMessage += `🎯 *【 定向与专属免流 】*\n${directionalText}\n`;
+    }
+    if (voiceDetailsText) {
+      tgMessage += `📞 *【 语音通话包明细 】*\n${voiceDetailsText}\n`;
+    }
+
     tgMessage += `━━━━━━━━━━━━━━━━━━\n`;
     tgMessage += `⚡ _数据来自 FlowFetch 自动化推送_`;
 
-    console.log("正在发送至 Telegram...");
-    
     // 6. 发送至 Telegram
     const tgUrl = `https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage`;
     const tgResponse = await fetch(tgUrl, {
@@ -122,22 +157,15 @@ export default async function handler(request, response) {
 
     return response.status(200).json({ 
       success: true, 
-      message: "通知成功发送！"
+      message: "精细化通知成功发送！"
     });
 
   } catch (error) {
     clearTimeout(timeoutId);
     console.error("运行出错:", error);
-
-    let friendlyMessage = error.message;
-    if (error.name === 'AbortError') {
-      friendlyMessage = "请求联通接口超时（7秒未响应）。说明 Vercel 的海外 IP 被中国联通防火墙直接拦截/丢包。";
-    }
-
     return response.status(500).json({ 
       success: false, 
-      error: friendlyMessage 
+      error: error.message 
     });
   }
 }
-
