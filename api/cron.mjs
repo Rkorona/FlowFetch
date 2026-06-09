@@ -106,7 +106,7 @@ export default async function handler(request, response) {
     const ts = updateTime.length >= 16 ? updateTime.slice(5, 16) : updateTime;
     let msg = `*FlowFetch*　\`${ts}\`\n${packageName}\n\n`;
     
-    msg += `*流量:* \`${flowUsed} GB\` • \`${flowRemain} GB\``;
+    msg += `*流量:* \`${flowUsed} GB\` • \`${flowRemain} GB\`\n\n`;
     msg += `*语音:* \`${voiceRemain} 分钟\``;
     if (parseInt(voiceUsed) > 0) msg += `　已用 \`${voiceUsed} 分\``;
     msg += '\n';
