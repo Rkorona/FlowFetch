@@ -94,7 +94,7 @@ export default async function handler(request, response) {
       if (unlimited)
         return `∙ ${name}   已用 \`${mbToGb(use)} GB\`（不限额）`;
       const b = bar(use, total);
-      return `∙ ${name}   \`${mbToGb(use)} / ${mbToGb(total)} GB\``);
+      return `∙ ${name}   \`${mbToGb(use)} / ${mbToGb(total)} GB\``;
     };
     
     // ── 整体进度条 ───────────────────────────────
